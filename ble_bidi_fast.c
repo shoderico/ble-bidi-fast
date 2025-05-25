@@ -1,21 +1,26 @@
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
+
 #include "ble_bidi_fast.h"
+
 #include "esp_log.h"
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/timers.h"
 
-#define BLE_BIDI_FAST_TAG "BLE_BIDI_FAST"
+
+#define TAG "BLE_BIDI_FAST"
 
 // Advertising parameters
 static esp_ble_adv_params_t adv_params = {
-    .adv_int_min = 0x20, // 32ms
-    .adv_int_max = 0x40, // 64ms
-    .adv_type = ADV_TYPE_IND,
-    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-    .channel_map = ADV_CHNL_ALL,
-    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+    .adv_int_min = 0x20, // advertising interval max (32ms)
+    .adv_int_max = 0x40, // advertising interval max (64ms)
+    .adv_type = ADV_TYPE_IND, // connectable advertise
+    .own_addr_type = BLE_ADDR_TYPE_PUBLIC, // public address
+    .channel_map = ADV_CHNL_ALL, // use all channels
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY, // allow scan & connectable
 };
 
 // Internal state
@@ -27,7 +32,12 @@ static struct {
     uint16_t receive_char_handle;
     uint16_t conn_id;
     bool is_send_enabled;
-    ble_bidi_fast_config_t config; // User configuration
+    struct {
+        ble_bidi_fast_config_t base; // Base configuration
+        uint8_t service_uuid[UUID128_LEN]; // Service UUID
+        uint8_t send_char_uuid[UUID128_LEN]; // Send Characteristic UUID
+        uint8_t receive_char_uuid[UUID128_LEN]; // Receive Characteristic UUID
+    } config; // Extended configuration with UUIDs
 } ble_state = {
     .gatt_if = ESP_GATT_IF_NONE,
     .is_send_enabled = false,
@@ -37,217 +47,428 @@ static struct {
 static uint8_t adv_data[31];
 static uint8_t scan_rsp_data[31];
 
-// Timer for periodic sending (reserved for future use)
-static TimerHandle_t send_timer;
-
 // Configure advertising data
-static void configure_adv_data(void) {
-    uint8_t *p = adv_data;
+static void configure_adv_data(void)
+{
+    uint8_t p;
+
+    //--------------------------------------------------------------------------------
+    // Advertising data
+    p = 0;
+    uint8_t adv_data_len = 0;
+    
     // Flags
-    *p++ = 2; // Length
-    *p++ = ESP_BLE_AD_TYPE_FLAG;
-    *p++ = 0x06; // General discoverable, BLE only
+    adv_data[ p++ ] = 2; // Length
+    adv_data[ p++ ] = ESP_BLE_AD_TYPE_FLAG; // Type: 0x01: discoverability, connectability
+    adv_data[ p++ ] = 0x06; // General discoverable, BLE only
 
     // Device Name
-    *p++ = ble_state.config.device_name_len + 1; // Length
-    *p++ = ESP_BLE_AD_TYPE_NAME_CMPL;
-    memcpy(p, ble_state.config.device_name, ble_state.config.device_name_len);
-    p += ble_state.config.device_name_len;
+    adv_data[ p++ ] = ble_state.config.base.device_name_len + 1; // Length
+    adv_data[ p++ ] = ESP_BLE_AD_TYPE_NAME_CMPL; // Type: 0x09: Complete Local Name
+    memcpy( &adv_data[p], ble_state.config.base.device_name, ble_state.config.base.device_name_len);
+    p += ble_state.config.base.device_name_len;
 
     // TX Power
-    *p++ = 2;
-    *p++ = ESP_BLE_AD_TYPE_TX_PWR;
-    *p++ = 0xEB; // -21 dBm
+    adv_data[ p++ ] = 2; // Length
+    adv_data[ p++ ] = ESP_BLE_AD_TYPE_TX_PWR; // Type: 
+    adv_data[ p++ ] = 0xEB; // -21 dBm
 
-    // Scan Response: Service UUID
-    p = scan_rsp_data;
-    *p++ = UUID128_LEN + 1; // Length
-    *p++ = ESP_BLE_AD_TYPE_128SRV_CMPL;
-    memcpy(p, ble_state.config.service_uuid, UUID128_LEN);
+    adv_data_len = p;
 
+
+    //--------------------------------------------------------------------------------
+    // Scan response data
+    p = 0;
+    uint8_t scan_rsp_data_len = 0;
+
+    // Service UUID
+    scan_rsp_data[ p++ ] = UUID128_LEN + 1; // Length
+    scan_rsp_data[ p++ ] = ESP_BLE_AD_TYPE_128SRV_CMPL; // Type:
+    memcpy( &scan_rsp_data[p], ble_state.config.service_uuid, UUID128_LEN);
+    p += UUID128_LEN;
+
+    scan_rsp_data_len = p;
+
+    //--------------------------------------------------------------------------------
     // Set advertising data
-    esp_ble_gap_config_adv_data_raw(adv_data, p - adv_data);
-    esp_ble_gap_config_scan_rsp_data_raw(scan_rsp_data, UUID128_LEN + 2);
+    esp_err_t ret;
+    ret = esp_ble_gap_config_adv_data_raw(adv_data, adv_data_len);
+    if (ret) {
+        ESP_LOGE(TAG, "%s Setting raw advertising data failed", __func__);
+    }
+    ret = esp_ble_gap_config_scan_rsp_data_raw(scan_rsp_data, scan_rsp_data_len);
+    if (ret) {
+        ESP_LOGE(TAG, "%s Setting raw scan response data failed", __func__);
+    }
 }
 
+
 // GAP event handler
-static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
+{
+    esp_err_t ret;
     switch (event) {
-        case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Advertising data set complete");
-            esp_ble_gap_start_advertising(&adv_params);
+        case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT: // seq[b-2]
+            ESP_LOGI(TAG, "GAP : Advertising data set complete");
+
+            // start advertising
+            ret = esp_ble_gap_start_advertising(&adv_params);
             break;
+        
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
             if (param->adv_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
-                ESP_LOGI(BLE_BIDI_FAST_TAG, "Advertising started");
+                ESP_LOGI(TAG, "GAP : Advertising started");
             } else {
-                ESP_LOGE(BLE_BIDI_FAST_TAG, "Advertising start failed");
+                ESP_LOGE(TAG, "GAP : Advertising start failed");
             }
             break;
+
+        case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
+            ESP_LOGI(TAG, "GAP : ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT");
+            break;
+
+        case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
+            ESP_LOGI(TAG, "GAP : ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT");
+            break;
+            
+        case ESP_GAP_BLE_SET_PKT_LENGTH_COMPLETE_EVT:
+            ESP_LOGI(TAG, "GAP : ESP_GAP_BLE_SET_PKT_LENGTH_COMPLETE_EVT");
+            break;
+            
+        case ESP_GAP_BLE_CHANNEL_SELECT_ALGORITHM_EVT:
+            ESP_LOGI(TAG, "GAP : ESP_GAP_BLE_CHANNEL_SELECT_ALGORITHM_EVT");
+            break;;
+        
         default:
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Unhandled GAP event: %d", event);
+            ESP_LOGI(TAG, "GAP : Unhandled GAP event: %d", event);
             break;
     }
 }
 
 // GATT event handler
-static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
+static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
+{
     esp_err_t ret;
     switch (event) {
-        case ESP_GATTS_REG_EVT:
+        case ESP_GATTS_REG_EVT: // seq[a-2]
+            ESP_LOGI(TAG, "GATT: GATT app registered, status=%d", param->reg.status);
+
             if (param->reg.status == ESP_GATT_OK) {
+
+                // GATT interface
                 ble_state.gatt_if = gatts_if;
 
                 // Configure advertising data
                 configure_adv_data();
 
-                // Create GATT service
+                // prepare 
                 esp_gatt_srvc_id_t service_id = {
                     .id.inst_id = 0,
                     .is_primary = true,
                     .id.uuid.len = ESP_UUID_LEN_128,
                 };
-                memcpy(service_id.id.uuid.uuid128, ble_state.config.service_uuid, UUID128_LEN);
-                esp_ble_gatts_create_service(gatts_if, &service_id, 12);
+                memcpy(service_id.id.uuid.uuid.uuid128, ble_state.config.service_uuid, UUID128_LEN);
+
+                // Create GATT service  // triggers ESP_GATTS_CREATE_EVT.
+                ret = esp_ble_gatts_create_service(gatts_if
+                    , &service_id
+                    , 12 // 12: The number of handles requested for this service.
+                );
+                if (ret) {
+                    ESP_LOGE(TAG, "GATT: Create service failed, error code = %s", esp_err_to_name(ret));
+                }
             }
             break;
 
-        case ESP_GATTS_CREATE_EVT:
-            ble_state.service_handle = param->create.service_handle;
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Service created, handle=%d", ble_state.service_handle);
+        case ESP_GATTS_CREATE_EVT: // seq[a-3]
+            ESP_LOGI(TAG, "GATT: Service created, handle=%d", param->create.service_handle);
 
-            // Add Send Characteristic
-            esp_bt_uuid_t send_uuid = {.len = ESP_UUID_LEN_128};
+            // GATT service handle
+            ble_state.service_handle = param->create.service_handle;
+
+            // prepare
+            esp_bt_uuid_t send_uuid = {
+                .len = ESP_UUID_LEN_128
+            };
             memcpy(send_uuid.uuid.uuid128, ble_state.config.send_char_uuid, UUID128_LEN);
-            esp_ble_gatts_add_char(ble_state.service_handle, &send_uuid,
-                                   ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-                                   ESP_GATT_CHAR_PROP_BIT_NOTIFY, NULL, NULL);
+
+            // Add a characteristic into a service. // triggers ESP_GATTS_ADD_CHAR_EVT.
+            ret = esp_ble_gatts_add_char(ble_state.service_handle
+                , &send_uuid
+                , ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE
+                , ESP_GATT_CHAR_PROP_BIT_NOTIFY
+                , NULL
+                , NULL
+            );
+            if (ret) {
+                ESP_LOGE(TAG, "GATT: Add a characteristic failed, error code = %s", esp_err_to_name(ret));
+            }
             break;
 
-        case ESP_GATTS_ADD_CHAR_EVT:
+        case ESP_GATTS_ADD_CHAR_EVT: // seq[a-4], seq[a-6]
             if (param->add_char.status == ESP_GATT_OK) {
                 if (!ble_state.send_char_handle) {
+                    ESP_LOGI(TAG, "GATT: Send characteristic added, handle=%d", param->add_char.attr_handle);
+
+                    // GATT send characteristic handle
                     ble_state.send_char_handle = param->add_char.attr_handle;
-                    ESP_LOGI(BLE_BIDI_FAST_TAG, "Send characteristic added, handle=%d", ble_state.send_char_handle);
+
+                    // prepare
+                    esp_bt_uuid_t cccd_uuid = {
+                        .len = ESP_UUID_LEN_16, 
+                        .uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG
+                    };
 
                     // Add CCCD
-                    esp_bt_uuid_t cccd_uuid = {.len = ESP_UUID_LEN_16, .uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG};
-                    esp_ble_gatts_add_char_descr(ble_state.service_handle, &cccd_uuid,
-                                                ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE, NULL, NULL);
+                    ret = esp_ble_gatts_add_char_descr(ble_state.service_handle
+                        , &cccd_uuid
+                        , ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE
+                        , NULL
+                        , NULL
+                    );
+                    if (ret) {
+                        ESP_LOGE(TAG, "GATT: Add a characteristic descriptor failed, error code = %s", esp_err_to_name(ret));
+                    }
                 } else {
+                    ESP_LOGI(TAG, "GATT: Receive characteristic added, handle=%d", param->add_char.attr_handle);
+
+                    // GATT receive characteristic handle
                     ble_state.receive_char_handle = param->add_char.attr_handle;
-                    ESP_LOGI(BLE_BIDI_FAST_TAG, "Receive characteristic added, handle=%d", ble_state.receive_char_handle);
-                    esp_ble_gatts_start_service(ble_state.service_handle);
+
+                    // Start a service. // triggers ESP_GATTS_START_EVT.
+                    ret = esp_ble_gatts_start_service(ble_state.service_handle);
+                    if (ret) {
+                        ESP_LOGE(TAG, "GATT: Start service failed, error code = %s", esp_err_to_name(ret));
+                    }
                 }
             } else {
-                ESP_LOGE(BLE_BIDI_FAST_TAG, "Add characteristic failed, status=%d", param->add_char.status);
+                ESP_LOGE(TAG, "GATT: Add characteristic failed, status=%d", param->add_char.status);
             }
             break;
 
-        case ESP_GATTS_ADD_CHAR_DESCR_EVT:
+        case ESP_GATTS_ADD_CHAR_DESCR_EVT: // seq[a-5]
             if (param->add_char_descr.status == ESP_GATT_OK) {
+                ESP_LOGI(TAG, "CCCD added, handle=%d", param->add_char_descr.attr_handle);
+
+                // CCCD handle
                 ble_state.cccd_handle = param->add_char_descr.attr_handle;
-                ESP_LOGI(BLE_BIDI_FAST_TAG, "CCCD added, handle=%d", ble_state.cccd_handle);
+
+                // prepare
+                esp_bt_uuid_t receive_uuid = {
+                    .len = ESP_UUID_LEN_128
+                };
+                memcpy(receive_uuid.uuid.uuid128, ble_state.config.receive_char_uuid, UUID128_LEN);
 
                 // Add Receive Characteristic
-                esp_bt_uuid_t receive_uuid = {.len = ESP_UUID_LEN_128};
-                memcpy(receive_uuid.uuid.uuid128, ble_state.config.receive_char_uuid, UUID128_LEN);
-                esp_ble_gatts_add_char(ble_state.service_handle, &receive_uuid,
-                                       ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-                                       ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR, NULL, NULL);
+                ret = esp_ble_gatts_add_char(ble_state.service_handle
+                    , &receive_uuid
+                    , ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE
+                    , ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR
+                    , NULL
+                    , NULL
+                );
+                if (ret) {
+                    ESP_LOGE(TAG, "GATT: Add Write characteristic failed, error code = %s", esp_err_to_name(ret));
+                }
             } else {
-                ESP_LOGE(BLE_BIDI_FAST_TAG, "Add CCCD failed, status=%d", param->add_char_descr.status);
+                ESP_LOGE(TAG, "GATT: Add CCCD failed, status=%d (0x%x)", param->add_char_descr.status, param->add_char_descr.status);
             }
             break;
 
-        case ESP_GATTS_START_EVT:
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Service started, handle=%d", param->start.service_handle);
+        case ESP_GATTS_START_EVT: // seq[a-7]
+            ESP_LOGI(TAG, "Service started, handle=%d", param->start.service_handle);
             break;
 
         case ESP_GATTS_CONNECT_EVT:
+            ESP_LOGI(TAG, "GATT: Client connected, conn_id=%d", param->connect.conn_id);
+
+            // Connection ID
             ble_state.conn_id = param->connect.conn_id;
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Client connected, conn_id=%d", ble_state.conn_id);
-            esp_ble_gap_set_prefer_conn_params(param->connect.remote_bda, 0x06, 0x0C, 0, 400);
+            
+            // Set preferred connection parameter
+            ret = esp_ble_gap_set_prefer_conn_params(
+                param->connect.remote_bda
+                , 0x06 // min interval: 7.5ms
+                , 0x0C // max interva: 15ms
+                , 0    // latency : 0 sec
+                , 400  // timeout : 4 sec
+            );
+            if (ret) {
+                ESP_LOGE(TAG, "GATT: Set preferred connection params failed: %s", esp_err_to_name(ret));
+            }
             break;
 
         case ESP_GATTS_DISCONNECT_EVT:
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Client disconnected");
+            ESP_LOGI(TAG, "GATT: Client disconnected");
             ble_state.is_send_enabled = false;
             ble_state.conn_id = 0;
-            esp_ble_gap_start_advertising(&adv_params);
+
+            // re-start advertising
+            ret = esp_ble_gap_start_advertising(&adv_params);
+            if (ret) {
+                ESP_LOGE(TAG, "GATT: Re-start advertizing failed: %s", esp_err_to_name(ret));
+            }
             break;
 
         case ESP_GATTS_WRITE_EVT:
+            // Write to CCCD
             if (param->write.handle == ble_state.cccd_handle) {
+                
+                // Notify enabled
                 if (param->write.len == 2 && param->write.value[0] == 0x01 && param->write.value[1] == 0x00) {
-                    ESP_LOGI(BLE_BIDI_FAST_TAG, "Send enabled");
+                    ESP_LOGI(TAG, "GATT: Send notify enabled");
                     ble_state.is_send_enabled = true;
+
+                // Notify dsiabled
                 } else if (param->write.len == 2 && param->write.value[0] == 0x00 && param->write.value[1] == 0x00) {
-                    ESP_LOGI(BLE_BIDI_FAST_TAG, "Send disabled");
+                    ESP_LOGI(TAG, "GATT: Send nofity disabled");
                     ble_state.is_send_enabled = false;
+
                 }
+
+                // Need response?
                 if (param->write.need_rsp) {
-                    esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+                    ESP_LOGI(TAG, "GATT: Send Notify Response");
+                    ret = esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+                    if (ret) {
+                        ESP_LOGE(TAG, "GATT: Send Notify response failed: %s", esp_err_to_name(ret));
+                    }
                 }
+
+            // Receive Characteristic
             } else if (param->write.handle == ble_state.receive_char_handle) {
-                if (param->write.len <= BLE_BIDI_FAST_MAX_DATA_LEN && ble_state.config.on_receive_callback) {
-                    ble_state.config.on_receive_callback(param->write.value, param->write.len);
+
+                if (param->write.len <= BLE_BIDI_FAST_MAX_DATA_LEN && ble_state.config.base.on_receive_callback) {
+
+                    // Call receive callback
+                    ble_state.config.base.on_receive_callback(param->write.value, param->write.len);
                 }
+
+                // Need response?
                 if (param->write.need_rsp) {
-                    esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+                    ESP_LOGI(TAG, "GATT: Send Write Response");
+                    ret = esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
+                    if (ret) {
+                        ESP_LOGE(TAG, "GATT: Send Write response failed: %s", esp_err_to_name(ret));
+                    }
                 }
+            }
+            break;
+
+        case ESP_GATTS_MTU_EVT:
+            ESP_LOGI(TAG, "GATT: ESP_GATTS_MTU_EVT");
+            break;
+
+        case ESP_GATTS_CONF_EVT:
+            if (param->conf.status != ESP_GATT_OK) {
+                ESP_LOGE(TAG, "GATT: Notify confirm failed, status=%d (0x%x)", param->conf.status, param->conf.status);
+            }
+            break;
+
+        case ESP_GATTS_RESPONSE_EVT:
+            if (param->rsp.status != ESP_GATT_OK) {
+                ESP_LOGE(TAG, "GATT: response failed, status=%d (0x%x)", param->rsp.status, param->rsp.status);
             }
             break;
 
         default:
-            ESP_LOGI(BLE_BIDI_FAST_TAG, "Unhandled GATT event: %d", event);
+            ESP_LOGI(TAG, "GATT: Unhandled GATT event: %d", event);
             break;
     }
 }
 
-// Callback for send timer (reserved for future use)
-static void send_timer_callback(TimerHandle_t xTimer) {
-    // User calls ble_bidi_fast_send directly, so this is empty
-}
-
 // Initialize the BLE module
-esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config) {
+esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config,
+                             const uint8_t *service_uuid,
+                             const uint8_t *send_char_uuid,
+                             const uint8_t *receive_char_uuid)
+{
     esp_err_t ret;
 
-    // Copy configuration
-    memcpy(&ble_state.config, config, sizeof(ble_bidi_fast_config_t));
+    //-----------------------------------------------------------------------------
+    // Validate inputs
+    if (!config || !service_uuid || !send_char_uuid || !receive_char_uuid) {
+        ESP_LOGE(TAG, "Invalid input parameters");
+        return ESP_ERR_INVALID_ARG;
+    }
 
+    //-----------------------------------------------------------------------------
+    // Copy configuration
+    ble_state.config.base = *config;
+    memcpy(ble_state.config.service_uuid, service_uuid, UUID128_LEN);
+    memcpy(ble_state.config.send_char_uuid, send_char_uuid, UUID128_LEN);
+    memcpy(ble_state.config.receive_char_uuid, receive_char_uuid, UUID128_LEN);
+
+    //-----------------------------------------------------------------------------
     // Initialize Bluetooth controller
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
-    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
+    ESP_LOGI(TAG, "Initializing BT controller");
+    ret = esp_bt_controller_init(&bt_cfg);
+    if (ret) {
+        ESP_LOGE(TAG, "%s initialize controller failed: %s", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "Enabling BT controller");
+    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    if (ret) {
+        ESP_LOGE(TAG, "%s enable controller failed: %s", __func__, esp_err_to_name(ret));
+        return ret;
+    }
 
+    //-----------------------------------------------------------------------------
     // Initialize Bluedroid
-    ESP_ERROR_CHECK(esp_bluedroid_init());
-    ESP_ERROR_CHECK(esp_bluedroid_enable());
+    ESP_LOGI(TAG, "Initializing Bluedroid");
+    ret = esp_bluedroid_init();
+    if (ret) {
+        ESP_LOGE(TAG, "%s init bluetooth failed: %s", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "Enabling Bluedroid");
+    ret = esp_bluedroid_enable();
+    if (ret) {
+        ESP_LOGE(TAG, "%s enable bluetooth failed: %s", __func__, esp_err_to_name(ret));
+        return ret;
+    }
 
+    //-----------------------------------------------------------------------------
     // Register callbacks
-    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
-    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gatts_event_handler));
+    ESP_LOGI(TAG, "Registering GATT callback");
+    ret = esp_ble_gatts_register_callback(gatts_event_handler);
+    if (ret) {
+        ESP_LOGE(TAG, "%s gatt callback register error, error code = %s", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "Registering GAP callback");
+    ret = esp_ble_gap_register_callback(gap_event_handler);
+    if (ret) {
+        ESP_LOGE(TAG, "%s gap callback register error, error code = %s", __func__, esp_err_to_name(ret));
+        return ret;
+    }
 
+    //-----------------------------------------------------------------------------
     // Register GATT app
-    ESP_ERROR_CHECK(esp_ble_gatts_app_register(0));
-
-    // Create send timer (for future use)
-    send_timer = xTimerCreate("SendTimer", pdMS_TO_TICKS(30), pdTRUE, NULL, send_timer_callback);
-    if (send_timer == NULL) {
-        ESP_LOGE(BLE_BIDI_FAST_TAG, "Failed to create send timer");
-        return ESP_FAIL;
+    ESP_LOGI(TAG, "Registering GATT app");
+    ret = esp_ble_gatts_app_register(0); // 0: app_id // triggers ESP_GATTS_REG_EVT. seq[a-1]
+    if (ret) {
+        ESP_LOGE(TAG, "%s gatt app register error, error code = %s", __func__, esp_err_to_name(ret));
+        return ret;
     }
 
     return ESP_OK;
 }
 
 // Send data to the connected client
-esp_err_t ble_bidi_fast_send(const uint8_t *data, uint8_t len) {
+esp_err_t ble_bidi_fast_send(const uint8_t *data, uint8_t len)
+{
     if (!ble_state.is_send_enabled || len > BLE_BIDI_FAST_MAX_DATA_LEN || ble_state.send_char_handle == 0) {
         return ESP_ERR_INVALID_STATE;
     }
-    return esp_ble_gatts_send_indicate(ble_state.gatt_if, ble_state.conn_id,
-                                       ble_state.send_char_handle, len, data, false);
+    return esp_ble_gatts_send_indicate(
+          ble_state.gatt_if
+        , ble_state.conn_id
+        , ble_state.send_char_handle
+        , len
+        , data
+        , false
+    );
 }
