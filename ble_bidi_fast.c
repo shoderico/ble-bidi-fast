@@ -472,3 +472,8 @@ esp_err_t ble_bidi_fast_send(const uint8_t *data, uint8_t len)
         , false
     );
 }
+
+bool ble_bidi_fast_can_send()
+{
+    return ble_state.is_send_enabled;
+}

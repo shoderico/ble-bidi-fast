@@ -29,4 +29,7 @@ esp_err_t ble_bidi_fast_init(
 // Send data to the connected client
 esp_err_t ble_bidi_fast_send(const uint8_t *data, uint8_t len);
 
+
+bool ble_bidi_fast_can_send();
+
 #endif // BLE_BIDI_FAST_H
