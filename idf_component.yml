@@ -8,3 +8,4 @@ files:
       - "ble_bidi_fast.h"
       - "ble_bidi_fast.c"
 repository: "https://github.com/shoderico/ble-bidi-fast.git"
+url: "https://github.com/shoderico/ble-bidi-fast"
