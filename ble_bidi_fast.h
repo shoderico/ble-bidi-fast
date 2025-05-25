@@ -1,0 +1,30 @@
+#ifndef BLE_BIDI_FAST_H
+#define BLE_BIDI_FAST_H
+
+#include <stdint.h>
+#include "esp_err.h"
+#include "esp_bt.h"
+
+// Length of 128-bit UUID
+#define UUID128_LEN 16
+
+// Maximum data length for send/receive
+#define BLE_BIDI_FAST_MAX_DATA_LEN 10
+
+// Configuration structure for BLE module
+typedef struct {
+    const char *device_name;          // Device name
+    uint8_t device_name_len;          // Length of device name
+    uint8_t service_uuid[UUID128_LEN]; // Service UUID
+    uint8_t send_char_uuid[UUID128_LEN];   // Send Characteristic UUID (device to app)
+    uint8_t receive_char_uuid[UUID128_LEN]; // Receive Characteristic UUID (app to device)
+    void (*on_receive_callback)(const uint8_t *data, uint8_t len); // Callback for received data
+} ble_bidi_fast_config_t;
+
+// Initialize the BLE module
+esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config);
+
+// Send data to the connected client
+esp_err_t ble_bidi_fast_send(const uint8_t *data, uint8_t len);
+
+#endif // BLE_BIDI_FAST_H

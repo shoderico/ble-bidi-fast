@@ -1,0 +1,8 @@
+name: ble_bidi_fast
+version: 1.0.0
+description: A lightweight ESP32 BLE component for fast, bidirectional communication
+dependencies:
+  idf: ">=4.4"
+files:
+  - ble_bidi_fast.h
+  - ble_bidi_fast.c
