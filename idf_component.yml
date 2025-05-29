@@ -1,5 +1,5 @@
 name: "ble_bidi_fast"
-version: "1.0.2"
+version: "1.0.3"
 description: "A lightweight ESP32 BLE component for fast, bidirectional communication"
 dependencies:
   idf: ">=4.4"
