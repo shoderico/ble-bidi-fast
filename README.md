@@ -20,7 +20,7 @@ This component is ideal for low-latency applications requiring compact binary da
 - **Compact Data**: Handles binary data for both TX and RX operations.
 - **High Performance**: Optimized for low latency with short advertising and connection intervals.
 - **Modular Design**: Easily integrates into ESP-IDF projects as a component.
-- **Connection Status**: Check if TX notifications are enabled with `ble_bidi_fast_is_tx_notification_enabled()`.
+- **Connection Status**: Check if TX notifications are enabled with `ble_bidi_fast_tx_is_notification_enabled()`.
 
 ## Requirements
 
@@ -84,7 +84,7 @@ void app_main(void) {
 
     // Send example data via TX Characteristic when ready
     uint8_t data[2] = {0x01, 0x02};
-    if (ble_bidi_fast_is_tx_notification_enabled()) {
+    if (ble_bidi_fast_tx_is_notification_enabled()) {
         ESP_ERROR_CHECK(ble_bidi_fast_tx_send(data, 2));
     }
 }
@@ -142,7 +142,7 @@ static void toggle_led(void) {
 // Task to blink LED when TX Characteristic's Notification is On (CCCD: On=0x01 0x00, Off=0x00 0x00)
 static void led_blink_task(void *pvParameters) {
     while (1) {
-        if (ble_bidi_fast_is_tx_notification_enabled()) {
+        if (ble_bidi_fast_tx_is_notification_enabled()) {
             toggle_led();
         } else {
             gpio_set_level(LED_GPIO, 0); // Stop blinking when TX Notification is Off
@@ -156,7 +156,7 @@ static void on_rx_receive_callback(const uint8_t *data, uint8_t len) {
     ESP_LOGI(TAG, "Received %d bytes on RX Characteristic", len);
     
     // Echo back the received data via TX Characteristic
-    if (ble_bidi_fast_is_tx_notification_enabled()) {
+    if (ble_bidi_fast_tx_is_notification_enabled()) {
         esp_err_t ret = ble_bidi_fast_tx_send(data, len);
         if (ret) {
             ESP_LOGW(TAG, "Failed to send via TX Characteristic, error=%d", ret);
@@ -191,7 +191,7 @@ void app_main(void) {
     ble_bidi_fast_config_t config = {
         .device_name = "SimpleEcho",
         .device_name_len = 10,
-        .on_rx_receive_callback = on_rx_receive_callback,
+        .rx_receive_callback = on_rx_receive_callback,
     };
 
     // Initialize BLE
@@ -221,8 +221,8 @@ void app_main(void) {
 
 - **`ble_bidi_fast_init`**: Initializes the BLE module with the provided configuration and UUIDs. Returns `ESP_OK` on success or an error code on failure.
 - **`ble_bidi_fast_tx_send`**: Transmits data to the connected client using the Notify property of the TX Characteristic. Returns `ESP_OK` on success or `ESP_ERR_INVALID_STATE` if notifications are not enabled or data length is invalid.
-- **`ble_bidi_fast_is_tx_notification_enabled`**: Checks if the client has enabled notifications on the TX Characteristic. Returns `true` if notifications are enabled, `false` otherwise.
-- **`on_rx_receive_callback`**: User-defined callback invoked when data is received from the client via the RX Characteristic.
+- **`ble_bidi_fast_tx_is_notification_enabled`**: Checks if the client has enabled notifications on the TX Characteristic. Returns `true` if notifications are enabled, `false` otherwise.
+- **`rx_receive_callback`**: User-defined callback invoked when data is received from the client via the RX Characteristic.
 
 ## Notes
 

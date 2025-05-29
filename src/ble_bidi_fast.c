@@ -31,7 +31,7 @@ static struct {
     uint16_t tx_cccd_handle;
     uint16_t rx_char_handle;
     uint16_t conn_id;
-    bool is_tx_notification_enabled;
+    bool tx_is_notification_enabled;
     struct {
         ble_bidi_fast_config_t base; // Base configuration
         uint8_t service_uuid[UUID128_LEN]; // Service UUID
@@ -40,7 +40,7 @@ static struct {
     } config; // Extended configuration with UUIDs
 } ble_state = {
     .gatt_if = ESP_GATT_IF_NONE,
-    .is_tx_notification_enabled = false,
+    .tx_is_notification_enabled = false,
 };
 
 // Advertising data buffers
@@ -300,7 +300,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
         case ESP_GATTS_DISCONNECT_EVT:
             ESP_LOGI(TAG, "GATT: Client disconnected");
-            ble_state.is_tx_notification_enabled = false;
+            ble_state.tx_is_notification_enabled = false;
             ble_state.conn_id = 0;
 
             // re-start advertising
@@ -317,12 +317,12 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
                 // Notify enabled
                 if (param->write.len == 2 && param->write.value[0] == 0x01 && param->write.value[1] == 0x00) {
                     ESP_LOGI(TAG, "GATT: TX Notify enabled");
-                    ble_state.is_tx_notification_enabled = true;
+                    ble_state.tx_is_notification_enabled = true;
 
                 // Notify dsiabled
                 } else if (param->write.len == 2 && param->write.value[0] == 0x00 && param->write.value[1] == 0x00) {
                     ESP_LOGI(TAG, "GATT: TX Nofity disabled");
-                    ble_state.is_tx_notification_enabled = false;
+                    ble_state.tx_is_notification_enabled = false;
 
                 }
 
@@ -338,10 +338,10 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             // RX Characteristic
             } else if (param->write.handle == ble_state.rx_char_handle) {
 
-                if (ble_state.config.base.on_rx_receive_callback) {
+                if (ble_state.config.base.rx_receive_callback) {
 
                     // Call RX callback
-                    ble_state.config.base.on_rx_receive_callback(param->write.value, param->write.len);
+                    ble_state.config.base.rx_receive_callback(param->write.value, param->write.len);
                 }
 
                 // Need response?
@@ -460,7 +460,7 @@ esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config,
 // Send data from TX to the connected client
 esp_err_t ble_bidi_fast_tx_send(/*const*/ uint8_t *data, uint8_t len)
 {
-    if (!ble_state.is_tx_notification_enabled || ble_state.tx_char_handle == 0) {
+    if (!ble_state.tx_is_notification_enabled || ble_state.tx_char_handle == 0) {
         return ESP_ERR_INVALID_STATE;
     }
     return esp_ble_gatts_send_indicate(
@@ -474,7 +474,7 @@ esp_err_t ble_bidi_fast_tx_send(/*const*/ uint8_t *data, uint8_t len)
 }
 
 // Retreive TX notification is enabled or not
-bool ble_bidi_fast_is_tx_notification_enabled()
+bool ble_bidi_fast_tx_is_notification_enabled()
 {
-    return ble_state.is_tx_notification_enabled;
+    return ble_state.tx_is_notification_enabled;
 }

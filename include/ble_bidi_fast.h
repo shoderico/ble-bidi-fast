@@ -12,7 +12,7 @@
 typedef struct {
     const char *device_name;          // Device name
     uint8_t device_name_len;          // Length of device name
-    void (*on_rx_receive_callback)(/*const*/ uint8_t *data, uint8_t len); // Callback for RX received data
+    void (*rx_receive_callback)(/*const*/ uint8_t *data, uint8_t len); // Callback for RX received data
 } ble_bidi_fast_config_t;
 
 // Initialize the BLE module with UUIDs
@@ -28,6 +28,6 @@ esp_err_t ble_bidi_fast_tx_send(/*const*/ uint8_t *data, uint8_t len);
 
 
 // Retreive TX notification is enabled or not
-bool ble_bidi_fast_is_tx_notification_enabled();
+bool ble_bidi_fast_tx_is_notification_enabled();
 
 #endif // BLE_BIDI_FAST_H
