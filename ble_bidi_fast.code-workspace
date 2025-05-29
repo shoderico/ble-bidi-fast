@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "./examples/ble_simple_echo"
+		},
+		{
+			"path": "./test_runner"
+		}
+	],
+	"settings": {}
+}

@@ -27,20 +27,20 @@ static esp_ble_adv_params_t adv_params = {
 static struct {
     esp_gatt_if_t gatt_if;
     uint16_t service_handle;
-    uint16_t send_char_handle;
-    uint16_t cccd_handle;
-    uint16_t receive_char_handle;
+    uint16_t tx_char_handle;
+    uint16_t tx_cccd_handle;
+    uint16_t rx_char_handle;
     uint16_t conn_id;
-    bool is_send_enabled;
+    bool is_tx_notification_enabled;
     struct {
         ble_bidi_fast_config_t base; // Base configuration
         uint8_t service_uuid[UUID128_LEN]; // Service UUID
-        uint8_t send_char_uuid[UUID128_LEN]; // Send Characteristic UUID
-        uint8_t receive_char_uuid[UUID128_LEN]; // Receive Characteristic UUID
+        uint8_t tx_char_uuid[UUID128_LEN]; // TX Characteristic UUID
+        uint8_t rx_char_uuid[UUID128_LEN]; // RX Characteristic UUID
     } config; // Extended configuration with UUIDs
 } ble_state = {
     .gatt_if = ESP_GATT_IF_NONE,
-    .is_send_enabled = false,
+    .is_tx_notification_enabled = false,
 };
 
 // Advertising data buffers
@@ -106,7 +106,7 @@ static void configure_adv_data(void)
 // GAP event handler
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
-    esp_err_t ret;
+    esp_err_t ret = ESP_OK;
     switch (event) {
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT: // seq[b-2]
             ESP_LOGI(TAG, "GAP : Advertising data set complete");
@@ -148,7 +148,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 // GATT event handler
 static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
-    esp_err_t ret;
+    esp_err_t ret = ESP_OK;
     switch (event) {
         case ESP_GATTS_REG_EVT: // seq[a-2]
             ESP_LOGI(TAG, "GATT: GATT app registered, status=%d", param->reg.status);
@@ -187,53 +187,53 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             ble_state.service_handle = param->create.service_handle;
 
             // prepare
-            esp_bt_uuid_t send_uuid = {
+            esp_bt_uuid_t tx_uuid = {
                 .len = ESP_UUID_LEN_128
             };
-            memcpy(send_uuid.uuid.uuid128, ble_state.config.send_char_uuid, UUID128_LEN);
+            memcpy(tx_uuid.uuid.uuid128, ble_state.config.tx_char_uuid, UUID128_LEN);
 
-            // Add a characteristic into a service. // triggers ESP_GATTS_ADD_CHAR_EVT.
+            // Add a TX characteristic into a service. // triggers ESP_GATTS_ADD_CHAR_EVT.
             ret = esp_ble_gatts_add_char(ble_state.service_handle
-                , &send_uuid
+                , &tx_uuid
                 , ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE
                 , ESP_GATT_CHAR_PROP_BIT_NOTIFY
                 , NULL
                 , NULL
             );
             if (ret) {
-                ESP_LOGE(TAG, "GATT: Add a characteristic failed, error code = %s", esp_err_to_name(ret));
+                ESP_LOGE(TAG, "GATT: Add a TX characteristic failed, error code = %s", esp_err_to_name(ret));
             }
             break;
 
         case ESP_GATTS_ADD_CHAR_EVT: // seq[a-4], seq[a-6]
             if (param->add_char.status == ESP_GATT_OK) {
-                if (!ble_state.send_char_handle) {
-                    ESP_LOGI(TAG, "GATT: Send characteristic added, handle=%d", param->add_char.attr_handle);
+                if (!ble_state.tx_char_handle) {
+                    ESP_LOGI(TAG, "GATT: TX characteristic added, handle=%d", param->add_char.attr_handle);
 
-                    // GATT send characteristic handle
-                    ble_state.send_char_handle = param->add_char.attr_handle;
+                    // GATT TX characteristic handle
+                    ble_state.tx_char_handle = param->add_char.attr_handle;
 
                     // prepare
-                    esp_bt_uuid_t cccd_uuid = {
+                    esp_bt_uuid_t tx_cccd_uuid = {
                         .len = ESP_UUID_LEN_16, 
                         .uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG
                     };
 
-                    // Add CCCD
+                    // Add TX CCCD
                     ret = esp_ble_gatts_add_char_descr(ble_state.service_handle
-                        , &cccd_uuid
+                        , &tx_cccd_uuid
                         , ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE
                         , NULL
                         , NULL
                     );
                     if (ret) {
-                        ESP_LOGE(TAG, "GATT: Add a characteristic descriptor failed, error code = %s", esp_err_to_name(ret));
+                        ESP_LOGE(TAG, "GATT: Add a TX characteristic descriptor failed, error code = %s", esp_err_to_name(ret));
                     }
                 } else {
-                    ESP_LOGI(TAG, "GATT: Receive characteristic added, handle=%d", param->add_char.attr_handle);
+                    ESP_LOGI(TAG, "GATT: RX characteristic added, handle=%d", param->add_char.attr_handle);
 
-                    // GATT receive characteristic handle
-                    ble_state.receive_char_handle = param->add_char.attr_handle;
+                    // GATT RX characteristic handle
+                    ble_state.rx_char_handle = param->add_char.attr_handle;
 
                     // Start a service. // triggers ESP_GATTS_START_EVT.
                     ret = esp_ble_gatts_start_service(ble_state.service_handle);
@@ -242,36 +242,36 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
                     }
                 }
             } else {
-                ESP_LOGE(TAG, "GATT: Add characteristic failed, status=%d", param->add_char.status);
+                ESP_LOGE(TAG, "GATT: Add TX characteristic failed, status=%d", param->add_char.status);
             }
             break;
 
         case ESP_GATTS_ADD_CHAR_DESCR_EVT: // seq[a-5]
             if (param->add_char_descr.status == ESP_GATT_OK) {
-                ESP_LOGI(TAG, "CCCD added, handle=%d", param->add_char_descr.attr_handle);
+                ESP_LOGI(TAG, "TX CCCD added, handle=%d", param->add_char_descr.attr_handle);
 
                 // CCCD handle
-                ble_state.cccd_handle = param->add_char_descr.attr_handle;
+                ble_state.tx_cccd_handle = param->add_char_descr.attr_handle;
 
                 // prepare
-                esp_bt_uuid_t receive_uuid = {
+                esp_bt_uuid_t rx_uuid = {
                     .len = ESP_UUID_LEN_128
                 };
-                memcpy(receive_uuid.uuid.uuid128, ble_state.config.receive_char_uuid, UUID128_LEN);
+                memcpy(rx_uuid.uuid.uuid128, ble_state.config.rx_char_uuid, UUID128_LEN);
 
                 // Add Receive Characteristic
                 ret = esp_ble_gatts_add_char(ble_state.service_handle
-                    , &receive_uuid
+                    , &rx_uuid
                     , ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE
                     , ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR
                     , NULL
                     , NULL
                 );
                 if (ret) {
-                    ESP_LOGE(TAG, "GATT: Add Write characteristic failed, error code = %s", esp_err_to_name(ret));
+                    ESP_LOGE(TAG, "GATT: Add RX characteristic failed, error code = %s", esp_err_to_name(ret));
                 }
             } else {
-                ESP_LOGE(TAG, "GATT: Add CCCD failed, status=%d (0x%x)", param->add_char_descr.status, param->add_char_descr.status);
+                ESP_LOGE(TAG, "GATT: Add TX CCCD failed, status=%d (0x%x)", param->add_char_descr.status, param->add_char_descr.status);
             }
             break;
 
@@ -300,7 +300,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
         case ESP_GATTS_DISCONNECT_EVT:
             ESP_LOGI(TAG, "GATT: Client disconnected");
-            ble_state.is_send_enabled = false;
+            ble_state.is_tx_notification_enabled = false;
             ble_state.conn_id = 0;
 
             // re-start advertising
@@ -312,44 +312,44 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
         case ESP_GATTS_WRITE_EVT:
             // Write to CCCD
-            if (param->write.handle == ble_state.cccd_handle) {
+            if (param->write.handle == ble_state.tx_cccd_handle) {
                 
                 // Notify enabled
                 if (param->write.len == 2 && param->write.value[0] == 0x01 && param->write.value[1] == 0x00) {
-                    ESP_LOGI(TAG, "GATT: Send notify enabled");
-                    ble_state.is_send_enabled = true;
+                    ESP_LOGI(TAG, "GATT: TX Notify enabled");
+                    ble_state.is_tx_notification_enabled = true;
 
                 // Notify dsiabled
                 } else if (param->write.len == 2 && param->write.value[0] == 0x00 && param->write.value[1] == 0x00) {
-                    ESP_LOGI(TAG, "GATT: Send nofity disabled");
-                    ble_state.is_send_enabled = false;
+                    ESP_LOGI(TAG, "GATT: TX Nofity disabled");
+                    ble_state.is_tx_notification_enabled = false;
 
                 }
 
                 // Need response?
                 if (param->write.need_rsp) {
-                    ESP_LOGI(TAG, "GATT: Send Notify Response");
+                    ESP_LOGI(TAG, "GATT: Send TX response");
                     ret = esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
                     if (ret) {
-                        ESP_LOGE(TAG, "GATT: Send Notify response failed: %s", esp_err_to_name(ret));
+                        ESP_LOGE(TAG, "GATT: Send TX response failed: %s", esp_err_to_name(ret));
                     }
                 }
 
-            // Receive Characteristic
-            } else if (param->write.handle == ble_state.receive_char_handle) {
+            // RX Characteristic
+            } else if (param->write.handle == ble_state.rx_char_handle) {
 
-                if (param->write.len <= BLE_BIDI_FAST_MAX_DATA_LEN && ble_state.config.base.on_receive_callback) {
+                if (ble_state.config.base.on_rx_receive_callback) {
 
-                    // Call receive callback
-                    ble_state.config.base.on_receive_callback(param->write.value, param->write.len);
+                    // Call RX callback
+                    ble_state.config.base.on_rx_receive_callback(param->write.value, param->write.len);
                 }
 
                 // Need response?
                 if (param->write.need_rsp) {
-                    ESP_LOGI(TAG, "GATT: Send Write Response");
+                    ESP_LOGI(TAG, "GATT: Send RX response");
                     ret = esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, ESP_GATT_OK, NULL);
                     if (ret) {
-                        ESP_LOGE(TAG, "GATT: Send Write response failed: %s", esp_err_to_name(ret));
+                        ESP_LOGE(TAG, "GATT: Send RX response failed: %s", esp_err_to_name(ret));
                     }
                 }
             }
@@ -380,14 +380,14 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 // Initialize the BLE module
 esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config,
                              const uint8_t *service_uuid,
-                             const uint8_t *send_char_uuid,
-                             const uint8_t *receive_char_uuid)
+                             const uint8_t *tx_char_uuid,
+                             const uint8_t *rx_char_uuid)
 {
     esp_err_t ret;
 
     //-----------------------------------------------------------------------------
     // Validate inputs
-    if (!config || !service_uuid || !send_char_uuid || !receive_char_uuid) {
+    if (!config || !service_uuid || !tx_char_uuid || !rx_char_uuid) {
         ESP_LOGE(TAG, "Invalid input parameters");
         return ESP_ERR_INVALID_ARG;
     }
@@ -396,8 +396,8 @@ esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config,
     // Copy configuration
     ble_state.config.base = *config;
     memcpy(ble_state.config.service_uuid, service_uuid, UUID128_LEN);
-    memcpy(ble_state.config.send_char_uuid, send_char_uuid, UUID128_LEN);
-    memcpy(ble_state.config.receive_char_uuid, receive_char_uuid, UUID128_LEN);
+    memcpy(ble_state.config.tx_char_uuid, tx_char_uuid, UUID128_LEN);
+    memcpy(ble_state.config.rx_char_uuid, rx_char_uuid, UUID128_LEN);
 
     //-----------------------------------------------------------------------------
     // Initialize Bluetooth controller
@@ -457,23 +457,24 @@ esp_err_t ble_bidi_fast_init(const ble_bidi_fast_config_t *config,
     return ESP_OK;
 }
 
-// Send data to the connected client
-esp_err_t ble_bidi_fast_send(const uint8_t *data, uint8_t len)
+// Send data from TX to the connected client
+esp_err_t ble_bidi_fast_tx_send(/*const*/ uint8_t *data, uint8_t len)
 {
-    if (!ble_state.is_send_enabled || len > BLE_BIDI_FAST_MAX_DATA_LEN || ble_state.send_char_handle == 0) {
+    if (!ble_state.is_tx_notification_enabled || ble_state.tx_char_handle == 0) {
         return ESP_ERR_INVALID_STATE;
     }
     return esp_ble_gatts_send_indicate(
           ble_state.gatt_if
         , ble_state.conn_id
-        , ble_state.send_char_handle
+        , ble_state.tx_char_handle
         , len
         , data
         , false
     );
 }
 
-bool ble_bidi_fast_can_send()
+// Retreive TX notification is enabled or not
+bool ble_bidi_fast_is_tx_notification_enabled()
 {
-    return ble_state.is_send_enabled;
+    return ble_state.is_tx_notification_enabled;
 }
