@@ -1,11 +1,11 @@
 name: "ble_bidi_fast"
-version: "1.0.1"
+version: "1.0.2"
 description: "A lightweight ESP32 BLE component for fast, bidirectional communication"
 dependencies:
   idf: ">=4.4"
 files:
    include:
-      - "ble_bidi_fast.h"
-      - "ble_bidi_fast.c"
+      - "include/ble_bidi_fast.h"
+      - "src/ble_bidi_fast.c"
 repository: "https://github.com/shoderico/ble-bidi-fast.git"
 url: "https://github.com/shoderico/ble-bidi-fast"
