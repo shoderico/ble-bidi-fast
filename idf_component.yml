@@ -7,5 +7,5 @@ files:
    include:
       - "include/ble_bidi_fast.h"
       - "src/ble_bidi_fast.c"
-repository: "https://github.com/shoderico/ble-bidi-fast.git"
-url: "https://github.com/shoderico/ble-bidi-fast"
+repository: "https://github.com/shoderico/ble_bidi_fast.git"
+url: "https://github.com/shoderico/ble_bidi_fast"
