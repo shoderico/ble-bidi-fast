@@ -38,7 +38,7 @@ static void toggle_led(void) {
 // Task to blink LED when TX Characteristic's Notification is On. ( CCCD: On=0x00:00, Off= 0x00:00 )
 static void led_blink_task(void *pvParameters) {
     while (1) {
-        if (ble_bidi_fast_is_tx_notification_enabled()) {
+        if (ble_bidi_fast_tx_is_notification_enabled()) {
             toggle_led();
         } else {
             gpio_set_level(LED_GPIO, 0); // Stop blinking when TX Notification is Off
@@ -52,7 +52,7 @@ static void on_rx_receive_callback(/*const*/ uint8_t *data, uint8_t len) {
     ESP_LOGI(TAG, "Received %d bytes", len);
     
     // Echo back the received data to TX
-    if (ble_bidi_fast_is_tx_notification_enabled()) {
+    if (ble_bidi_fast_tx_is_notification_enabled()) {
         esp_err_t ret = ble_bidi_fast_tx_send(data, len);
         if (ret) {
             ESP_LOGW(TAG, "Failed to send, error=%d", ret);
@@ -88,7 +88,7 @@ void app_main(void) {
     ble_bidi_fast_config_t config = {
         .device_name = "SimpleEcho",
         .device_name_len = 10,
-        .on_rx_receive_callback = on_rx_receive_callback,
+        .rx_receive_callback = on_rx_receive_callback,
     };
 
     // Initialize BLE

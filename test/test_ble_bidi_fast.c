@@ -12,7 +12,7 @@ TEST_CASE("ble_bidi_fast_init validates input parameters", "[ble_bidi_fast]")
     ble_bidi_fast_config_t config = {
         .device_name = "TestDevice",
         .device_name_len = 10,
-        .on_rx_receive_callback = dummy_rx_callback
+        .rx_receive_callback = dummy_rx_callback
     };
     uint8_t dummy_uuid[16] = {0};
 
